@@ -1,0 +1,17 @@
+{
+  "name": "Blast Radius Voice Studio",
+  "short_name": "Voice Studio",
+  "description": "Paste a script from Claude, get TTS blocks with style and text, and make the audio with the Enceladus voice.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#05070D",
+  "theme_color": "#05070D",
+  "lang": "fa",
+  "dir": "rtl",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

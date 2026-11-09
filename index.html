@@ -1,0 +1,541 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Blast Radius Voice Studio</title>
+<meta name="theme-color" content="#05070D">
+<meta name="description" content="Paste a script from Claude, get TTS blocks with style and text, and make the audio with the Enceladus voice.">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Voice Studio">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;700&family=Inter:wght@400;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: one column of three numbered steps (paste -> styled script -> audio). Brand palette from CLAUDE.md §5.1, deliberately dark. */
+:root {
+  --bg: #05070D; --panel: #0D1320; --line: #1C2740; --text: #EEF2F8; --dim: #7C8AA5;
+  --red: #FF3B4E; --amber: #FFB547; --cyan: #3DE0FF; --green: #2EE59D;
+  --ui: "Vazirmatn", "Segoe UI", Tahoma, sans-serif;
+  --en: "Inter", "Segoe UI", Arial, sans-serif;
+  --mono: "JetBrains Mono", Consolas, "Courier New", monospace;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.6 var(--ui); }
+body { padding-block: 20px 48px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+.wrap { max-width: 1100px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: end; gap: 8px 20px; border-bottom: 1px solid var(--line); padding-bottom: 12px; }
+h1 { margin: 0; font-size: 1.4rem; text-wrap: balance; }
+h1 small { display: block; font: 600 .75rem var(--mono); color: var(--cyan); letter-spacing: .14em; direction: ltr; text-align: right; }
+.voice { font: .8rem var(--mono); color: var(--dim); direction: ltr; }
+.voice b { color: var(--amber); }
+section { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 16px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+h2 { margin: 0; font-size: .95rem; display: flex; gap: 10px; align-items: center; }
+h2 .n { font: 700 .8rem var(--mono); color: #04121A; background: var(--cyan); border-radius: 3px; padding: 1px 7px; }
+label { font-size: .85rem; color: var(--dim); display: flex; flex-direction: column; gap: 5px; }
+textarea, input, select { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 9px 10px; font: inherit; width: 100%; }
+textarea { direction: ltr; text-align: left; font: .9rem/1.55 var(--en); resize: vertical; }
+textarea#out { font: .84rem/1.6 var(--mono); min-height: 340px; }
+textarea#src { min-height: 220px; }
+input, select { direction: ltr; text-align: left; }
+textarea:focus, input:focus, select:focus, button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
+.row { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
+.row > label { flex: 1 1 160px; }
+.check { flex-direction: row; align-items: center; gap: 8px; color: var(--text); }
+.check input { width: auto; }
+button { font: inherit; font-size: .9rem; border-radius: 4px; border: 1px solid var(--line); background: #131B2C; color: var(--text); padding: 8px 14px; cursor: pointer; }
+button:hover:not(:disabled) { border-color: var(--cyan); }
+button:disabled { opacity: .45; cursor: not-allowed; }
+button.primary { background: var(--cyan); border-color: var(--cyan); color: #04121A; font-weight: 700; }
+button.small { padding: 4px 10px; font-size: .8rem; }
+.hint { font-size: .8rem; color: var(--dim); margin: 0; }
+.status { font-size: .88rem; border-radius: 4px; padding: 9px 12px; margin: 0; white-space: pre-wrap; }
+.status.ok { background: rgba(46,229,157,.08); border: 1px solid rgba(46,229,157,.3); color: var(--green); }
+.status.err { background: rgba(255,59,78,.1); border: 1px solid rgba(255,59,78,.35); color: #FF8A96; }
+.status.info { background: rgba(61,224,255,.07); border: 1px solid rgba(61,224,255,.25); color: var(--cyan); }
+.status.warn { background: rgba(255,181,71,.08); border: 1px solid rgba(255,181,71,.3); color: var(--amber); }
+ul.list { margin: 0; padding-inline-start: 18px; font-size: .85rem; }
+ul.list li { margin: 2px 0; }
+.ltr { direction: ltr; unicode-bidi: isolate; }
+.parts { display: flex; flex-direction: column; gap: 8px; }
+.part { display: grid; grid-template-columns: 90px minmax(0,1fr); gap: 4px 12px; align-items: center; border: 1px solid var(--line); border-radius: 4px; padding: 8px 10px; background: var(--bg); }
+.part .nm { font: 600 .85rem var(--mono); direction: ltr; }
+.part .meta { font: .75rem var(--mono); color: var(--dim); direction: ltr; text-align: left; }
+.part .ctl { grid-column: 2; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; direction: ltr; }
+.part audio { height: 32px; max-width: 100%; }
+.part[data-s=fail] { border-color: var(--red); }
+.part[data-s=work] { border-color: var(--amber); }
+.tag { font: 600 .7rem var(--mono); padding: 1px 6px; border-radius: 3px; }
+.tag.ok { color: var(--green); border: 1px solid rgba(46,229,157,.4); }
+.tag.warn { color: var(--amber); border: 1px solid rgba(255,181,71,.4); }
+.tag.fail { color: var(--red); border: 1px solid rgba(255,59,78,.5); }
+details summary { cursor: pointer; color: var(--dim); font-size: .85rem; }
+.bar { height: 4px; background: var(--line); border-radius: 2px; overflow: hidden; }
+.bar i { display: block; height: 100%; width: 0; background: var(--cyan); transition: width .3s; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1><small>BLAST RADIUS · VOICE STUDIO</small>متن کلاد را بده، استایل و تکست آماده بگیر</h1>
+    <div class="voice">voice <b>Enceladus</b> · <span id="modelLine"></span></div>
+  </header>
+
+  <section>
+    <h2><span class="n">1</span>متن یا سناریو را بچسبانید</h2>
+    <textarea id="src" spellcheck="false" aria-label="Script from Claude" placeholder="Paste the script.md / shorts.md text you got from Claude here."></textarea>
+    <div class="row">
+      <label for="kind">نوع
+        <select id="kind">
+          <option value="auto">Auto detect</option>
+          <option value="long">Long video (parts of 1–2 min)</option>
+          <option value="shorts">Shorts (one file each)</option>
+        </select>
+      </label>
+      <label for="partMin">طول هر بخش (دقیقه)
+        <input type="number" id="partMin" min="0.75" max="2" step="0.25" value="1.5">
+      </label>
+      <label for="episode">نام قسمت (برای نام فایل)
+        <input type="text" id="episode" placeholder="blockbuster">
+      </label>
+    </div>
+    <label class="check" for="fullStory"><input type="checkbox" id="fullStory" checked> به آخر هر Short جمله <span class="ltr">"The full story is on the channel."</span> اضافه شود (اگر نداشته باشد)</label>
+    <div class="row">
+      <button class="primary" id="btnConvert">آماده کن (استایل و تکست)</button>
+      <button id="btnOffline">بدون اینترنت آماده کن</button>
+    </div>
+    <p class="hint">برچسب های <span class="ltr">{c12}</span>، یادداشت های <span class="ltr">[VISUAL: …]</span>، تیترها، شماره پاراگراف ها و <span class="ltr">**(analysis)**</span> خودکار حذف می شوند. کلمات متن عوض نمی شوند؛ فقط بلوک بندی، style، تگ ها و علامت گذاری اضافه می شود.</p>
+    <p class="status" id="convStatus" hidden></p>
+  </section>
+
+  <section>
+    <h2><span class="n">2</span>اسکریپت آماده (قابل ویرایش)</h2>
+    <textarea id="out" spellcheck="false" aria-label="TTS script"></textarea>
+    <div class="row">
+      <button id="btnCheck">بررسی دوباره</button>
+      <button id="btnCopy">کپی</button>
+      <button id="btnTxt">دانلود .txt</button>
+    </div>
+    <div id="checks"></div>
+  </section>
+
+  <section>
+    <h2><span class="n">3</span>ساخت صدا (اختیاری)</h2>
+    <div class="row">
+      <label for="key">کلید API گوگل (فقط در همین مرورگر ذخیره می شود)
+        <input type="password" id="key" autocomplete="off" placeholder="paste key">
+      </label>
+    </div>
+    <div class="row">
+      <button class="primary" id="btnAudio">ساخت صدای همه بخش ها</button>
+      <button id="btnFolder">انتخاب پوشه برای ذخیره مستقیم</button>
+      <span class="hint" id="folderName"></span>
+    </div>
+    <div class="bar" aria-hidden="true"><i id="bar"></i></div>
+    <p class="status" id="audioStatus" hidden></p>
+    <div class="parts" id="parts"></div>
+    <details>
+      <summary>تنظیمات مدل</summary>
+      <div class="row" style="margin-top:10px">
+        <label for="ttsModel">TTS model <input type="text" id="ttsModel"></label>
+        <label for="textModel">Text model <input type="text" id="textModel"></label>
+      </div>
+      <p class="hint">صدا همیشه Enceladus است. اگر گوگل نام مدل را عوض کند و خطای 404 بیاید، نام جدید را اینجا بگذارید.</p>
+    </details>
+  </section>
+</div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const VOICE = "Enceladus";
+const API = "https://generativelanguage.googleapis.com/v1beta/models/";
+const DEFAULTS = { ttsModel: "gemini-3.8-flash-tts", textModel: "gemini-3.8-flash" };
+const WPM_LONG = 145, WPM_SHORT = 150, SHORT_MAX = 59;
+const FULL_STORY = "The full story is on the channel.";
+const EVENT_TAGS = ["short pause","long pause","breath","sigh","exhales","gasp","chuckle","laugh","tsk","throat-clearing","whispers"];
+const BANNED_STYLE = ["flat","monotone","no emotion","same voice","keep the","pitch","loudness","male","female","man","woman","old","young","accent","british","american","voice"];
+
+const store = {
+  get(k, d) { try { const v = localStorage.getItem("br-vs:" + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem("br-vs:" + k, JSON.stringify(v)); } catch {} },
+};
+for (const id of ["ttsModel", "textModel"]) { $(id).value = store.get(id, DEFAULTS[id]); $(id).onchange = () => { store.set(id, $(id).value.trim() || DEFAULTS[id]); showModels(); }; }
+$("key").value = store.get("key", "");
+$("key").onchange = () => store.set("key", $("key").value.trim());
+$("src").value = store.get("src", "");
+$("src").oninput = () => store.set("src", $("src").value);
+$("out").value = store.get("out", "");
+$("out").oninput = () => store.set("out", $("out").value);
+$("episode").value = store.get("episode", "");
+$("episode").oninput = () => store.set("episode", $("episode").value);
+function showModels() { $("modelLine").textContent = `${$("ttsModel").value} · ${$("textModel").value}`; }
+showModels();
+
+/* ------------------------------------------------------------ step 1: clean Claude's script */
+function cleanLine(s) {
+  return s.replace(/\{c\d+\}/g, "")
+    .replace(/\*\*\((analysis|تحلیل)\)\*\*|\*\((analysis|تحلیل)\)\*/gi, "")
+    .replace(/\[VISUAL:[^\]]*\]/gi, "")
+    .replace(/\*\*|__/g, "")
+    .replace(/[ \t]+/g, " ").trim();
+}
+function keepLine(s) {
+  return s && !/^\[VISUAL/i.test(s) && !/^#/.test(s) && !/^-{3,}$/.test(s) && !/^¶\s*\d+$/.test(s)
+    && !/^\*?\*?(Hook|Title|Caption|Length|Script)[^:]*:?\*?\*?/i.test(s) && !/^[-*]\s+\*\*/.test(s);
+}
+function wordsIn(text) { return (text.replace(/<[^>]*>/g, " ").match(/[A-Za-z0-9][A-Za-z0-9'\-]*/g) || []).length; }
+
+function detectShorts(text) { return /^#{1,3}\s*Short\s*\d+/im.test(text); }
+
+function parseShorts(text) {
+  const chunks = text.split(/^(?=#{1,3}\s*Short\s*\d+)/im).filter(c => /^#{1,3}\s*Short\s*\d+/i.test(c));
+  return chunks.map((c, i) => {
+    const num = (c.match(/Short\s*(\d+)/i) || [])[1] || String(i + 1);
+    const scriptAt = c.search(/\*\*Script\*\*/i);
+    const body = (scriptAt > -1 ? c.slice(scriptAt + 10) : c.split("\n").slice(1).join("\n")).split(/^-{3,}\s*$/m)[0];
+    const lines = body.split("\n").map(l => l.trim()).filter(keepLine).map(cleanLine).filter(Boolean);
+    if ($("fullStory").checked && lines.length && !lines.join(" ").toLowerCase().includes(FULL_STORY.toLowerCase().slice(0, -1))) lines.push(FULL_STORY);
+    return { name: "short" + num, paras: [lines] };
+  }).filter(p => p.paras[0].length);
+}
+
+function parseLong(text) {
+  let t = text.replace(/\r\n?/g, "\n");
+  let paras;
+  if (/^¶\s*\d+\s*$/m.test(t)) {
+    t = t.slice(t.search(/^¶\s*\d+\s*$/m));
+    const last = t.search(/^-{3,}\s*$/m); if (last > -1) t = t.slice(0, last);
+    paras = t.split(/^¶\s*\d+\s*$/m);
+  } else {
+    paras = t.split(/\n\s*\n/);
+  }
+  paras = paras.map(p => p.split("\n").map(l => l.trim()).filter(keepLine).map(cleanLine).filter(Boolean)).filter(p => p.length);
+  // group paragraphs into parts of about partMin minutes, never over 2 minutes
+  const target = Number($("partMin").value || 1.5) * WPM_LONG, max = 2 * WPM_LONG;
+  const parts = []; let cur = [], words = 0;
+  for (const p of paras) {
+    const w = wordsIn(p.join(" "));
+    if (cur.length && (words + w > max || words >= target)) { parts.push(cur); cur = []; words = 0; }
+    cur.push(p); words += w;
+  }
+  if (cur.length) parts.push(cur);
+  return parts.map((ps, i) => ({ name: String(i + 1), paras: ps }));
+}
+
+function structure(text) {
+  const kind = $("kind").value === "auto" ? (detectShorts(text) ? "shorts" : "long") : $("kind").value;
+  const parts = kind === "shorts" ? parseShorts(text) : parseLong(text);
+  const skeleton = parts.map(p => `=== ${p.name}\n` + p.paras.map(ls => ls.join("\n")).join("\n\n")).join("\n\n");
+  return { kind, parts, skeleton };
+}
+
+/* ------------------------------------------------------------ step 1b: styles with Gemini */
+const PROMPT = `Turn this narration into a TTS script for Gemini TTS. Follow every rule.
+
+RULES
+1. Do not change, add, remove or reorder any spoken word. You may only: group lines into blocks, CAPITALIZE one key word in a few blocks (sparingly, not in every block), adjust punctuation (commas, --, ...), and write letters that are spoken one by one with hyphens (CEO -> C-E-O, DVDs -> D-V-Ds).
+2. Keep every "=== <name>" line exactly as it is, in the same place. Do not add or remove parts.
+3. Inside each part, start each block with a line "# style: <style>" followed by the block's text. Start a new block whenever the emotion or pace changes. Aim for 4-10 blocks per long part and 3-6 per Short.
+4. Each style is 3 to 8 words and describes delivery only (emotion, pace, tone). Examples: "calm documentary narrator, steady", "low and tense, restrained urgency", "grave and serious, slower", "dry, matter-of-fact", "hushed and thoughtful, slow", "calm and warm", "direct to the listener, slower". Never mention the voice, gender, age, accent, pitch or loudness. Never write "same voice", "flat", "monotone" or "no emotion". No hype words.
+5. Pauses: you may add <short pause> or <long pause> between sentences where a beat helps, especially before a reveal and after a question to the listener ("So, what would you do? <long pause>"). Only these angle-bracket tags are allowed: <short pause>, <long pause>, <breath>, <sigh>, <exhales>. Never use square brackets: they are read aloud.
+6. Output only the script. No explanations, no code fences.
+
+SCRIPT
+<<<
+{script}
+>>>`;
+
+async function gemini(model, body) {
+  const key = $("key").value.trim();
+  if (!key) throw new UserError("برای این کار کلید API لازم است. کلید را در بخش ۳ وارد کنید، یا «بدون اینترنت آماده کن» را بزنید.");
+  let last = "";
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    let res;
+    try {
+      res = await fetch(API + encodeURIComponent(model) + ":generateContent", {
+        method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": key }, body: JSON.stringify(body),
+      });
+    } catch (e) {
+      last = "اتصال به گوگل برقرار نشد. VPN روشن است؟ از ایران همه درخواست های Google API فقط با VPN کار می کنند.";
+      if (attempt < 3) { await note(`${last} تلاش دوباره تا ۱۰ ثانیه دیگر (${attempt}/3) ...`); await sleep(10000); continue; }
+      throw new UserError(last);
+    }
+    if (res.ok) return res.json();
+    const detail = (await res.text()).slice(0, 400);
+    if (/location is not supported/i.test(detail)) throw new UserError("گوگل درخواست را به خاطر موقعیت مکانی رد کرد. VPN را روشن کنید و دوباره امتحان کنید.");
+    const hints = {
+      400: "درخواست نامعتبر بود (400). متن اسکریپت را بررسی کنید.",
+      401: "کلید API پذیرفته نشد (401). کلید را بررسی کنید و مطمئن شوید VPN روشن است.",
+      403: "دسترسی رد شد (403). کلید را بررسی کنید و مطمئن شوید VPN روشن است.",
+      404: "مدل پیدا نشد (404). نام مدل احتمالا عوض شده؛ نام درست را از Google AI Studio بردارید و در «تنظیمات مدل» بگذارید.",
+    };
+    if (hints[res.status]) throw new UserError(hints[res.status] + "\nپاسخ سرور: " + detail.replace(key, "***").slice(0, 200));
+    last = res.status === 429 ? "سقف استفاده پر شد (429)." : `خطای سرور (${res.status}).`;
+    if (attempt < 3) { await note(`${last} تلاش دوباره تا ۱۰ ثانیه دیگر (${attempt}/3) ...`); await sleep(10000); }
+  }
+  throw new UserError(last + " بعدا دوباره امتحان کنید.");
+}
+class UserError extends Error {}
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+let noteTarget = "convStatus";
+async function note(msg) { status(noteTarget, "info", msg); }
+
+function offlineStyles(skeleton) {
+  const out = [];
+  for (const block of skeleton.split(/\n\s*\n/)) {
+    for (const line of block.split("\n")) if (line.startsWith("===")) out.push(line);
+    const text = block.split("\n").filter(l => !l.startsWith("===")).join(" ").trim();
+    if (!text) continue;
+    let style = "calm documentary narrator, steady";
+    if (/what would you do|your call|would you/i.test(text)) style = "direct to the listener, slower";
+    else if (/^problem (one|two|three|four|five|six)\b/i.test(text)) style = "focused and steady, clear";
+    else if (/full story is on the channel/i.test(text) && wordsIn(text) < 12) style = "calm and warm, inviting";
+    out.push("# style: " + style);
+    out.push(text.replace(/\?\s+(?=[A-Z])/g, "? <short pause> "));
+  }
+  return out.join("\n");
+}
+
+/* ------------------------------------------------------------ checks */
+function parseTts(text) {
+  const parts = []; let cur = null, blk = null; const errs = [];
+  text.split("\n").forEach((raw, i) => {
+    const line = raw.trim(); if (!line || line.startsWith("//")) return;
+    if (line.startsWith("===")) { cur = { name: line.slice(3).trim(), blocks: [] }; parts.push(cur); blk = null; return; }
+    if (/^# style:/i.test(line)) { if (!cur) { errs.push(`خط ${i + 1}: style قبل از اولین === آمده.`); return; } blk = { style: line.split(":").slice(1).join(":").trim(), text: [], line: i + 1 }; cur.blocks.push(blk); return; }
+    if (!cur) { errs.push(`خط ${i + 1}: متن قبل از اولین === آمده.`); return; }
+    if (!blk) { blk = { style: "", text: [], line: i + 1 }; cur.blocks.push(blk); }
+    blk.text.push(line);
+  });
+  parts.forEach(p => p.blocks = p.blocks.filter(b => b.text.length));
+  return { parts: parts.filter(p => p.blocks.length), errs };
+}
+function tokens(text) {
+  const keep = text.split("\n").map(l => l.trim()).filter(l => l && !l.startsWith("===") && !l.startsWith("//") && !/^# style:/i.test(l)).join(" ");
+  return (keep.replace(/<[^>]*>|\[[^\]]*\]|\|[^|]*\|/g, " ").replace(/(?<=\w)-(?=\w)/g, "").toLowerCase().replace(/’/g, "'").match(/[a-z0-9']+/g)) || [];
+}
+function firstDiffs(a, b, max = 6) {
+  // LCS-based word diff, reporting a few differences with context
+  const n = a.length, m = b.length;
+  if (n * m > 4e6) return a.join(" ") === b.join(" ") ? [] : ["متن خیلی طولانی است برای مقایسه دقیق؛ کلمات یکسان نیستند."];
+  const dp = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+  const out = []; let i = 0, j = 0;
+  while ((i < n || j < m) && out.length < max) {
+    if (i < n && j < m && a[i] === b[j]) { i++; j++; continue; }
+    const si = i, sj = j;
+    while ((i < n || j < m) && !(i < n && j < m && a[i] === b[j])) { if (j >= m || (i < n && dp[i + 1][j] >= dp[i][j + 1])) i++; else j++; }
+    out.push(`«…${a.slice(Math.max(0, si - 4), si).join(" ")} [${a.slice(si, i).join(" ")}]» ← شد → «[${b.slice(sj, j).join(" ")}]»`);
+  }
+  return out;
+}
+function check(skeleton, text) {
+  const errors = [], warns = [];
+  const { parts, errs } = parseTts(text);
+  errors.push(...errs);
+  if (!parts.length) errors.push("هیچ بخشی (=== نام) پیدا نشد.");
+  for (const p of parts) for (const b of p.blocks) {
+    const where = `[${p.name}] خط ${b.line}`;
+    const t = b.text.join(" ");
+    if (/\[[^\]]+\]/.test(t)) errors.push(`${where}: براکت مربعی پیدا شد؛ Gemini آن را بلند می خواند.`);
+    for (const tag of t.match(/<[^<>]+>/g) || []) if (!EVENT_TAGS.includes(tag.slice(1, -1).trim().toLowerCase())) warns.push(`${where}: تگ ناشناخته ${tag}`);
+    if (!b.style) { warns.push(`${where}: بلوک style ندارد.`); continue; }
+    const n = b.style.split(/\s+/).length;
+    if (n > 8) errors.push(`${where}: style بیشتر از ۸ کلمه است (${n}).`);
+    if (n < 3) warns.push(`${where}: style کوتاه تر از ۳ کلمه است.`);
+    for (const w of BANNED_STYLE) if (new RegExp("\\b" + w + "\\b", "i").test(b.style)) errors.push(`${where}: کلمه ممنوع در style: «${w}»`);
+  }
+  if (skeleton) {
+    const want = skeleton.split("\n").filter(l => l.startsWith("===")).map(l => l.slice(3).trim());
+    const got = parts.map(p => p.name);
+    if (want.join("|") !== got.join("|")) errors.push(`بخش ها عوض شده اند: باید ${want.join(", ")} باشد، شده ${got.join(", ")}.`);
+    const d = firstDiffs(tokens(skeleton), tokens(text));
+    if (d.length) errors.push("کلمات متن تغییر کرده اند (نباید تغییر کنند):\n" + d.join("\n"));
+  }
+  const short = parts.filter(p => /^short/i.test(p.name)).map(p => [p.name, wordsIn(p.blocks.map(b => b.text.join(" ")).join(" ")) / WPM_SHORT * 60]);
+  for (const [nm, s] of short) if (s > SHORT_MAX - 4) warns.push(`[${nm}] حدود ${s.toFixed(0)} ثانیه تخمین زده می شود؛ Short باید زیر ${SHORT_MAX} ثانیه بماند.`);
+  return { errors, warns, parts };
+}
+function renderChecks(r) {
+  const box = $("checks"); box.innerHTML = "";
+  const p = document.createElement("p");
+  const est = r.parts.map(pt => { const w = wordsIn(pt.blocks.map(b => b.text.join(" ")).join(" ")); return `${pt.name}: ~${fmt(w / (/^short/i.test(pt.name) ? WPM_SHORT : WPM_LONG) * 60)}`; }).join(" · ");
+  if (!r.errors.length) { p.className = "status ok"; p.textContent = `آماده است. ${r.parts.length} بخش، ${r.parts.reduce((n, x) => n + x.blocks.length, 0)} بلوک. هیچ کلمه ای عوض نشده.\n` + est; }
+  else { p.className = "status err"; p.textContent = "قبل از ساخت صدا این موارد را درست کنید:\n• " + r.errors.join("\n• "); }
+  box.appendChild(p);
+  if (r.warns.length) { const w = document.createElement("p"); w.className = "status warn"; w.textContent = "هشدار:\n• " + r.warns.join("\n• "); box.appendChild(w); }
+  $("btnAudio").disabled = !!r.errors.length || !r.parts.length;
+}
+function fmt(s) { s = Math.round(s); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; }
+function status(id, kind, msg) { const el = $(id); el.className = "status " + kind; el.textContent = msg; el.hidden = !msg; }
+
+let lastSkeleton = store.get("skeleton", "");
+async function run(useGemini) {
+  const src = $("src").value.trim();
+  if (!src) return status("convStatus", "err", "اول متن را بچسبانید.");
+  const s = structure(src);
+  if (!s.parts.length) return status("convStatus", "err", "متنی برای خواندن پیدا نشد.");
+  lastSkeleton = s.skeleton; store.set("skeleton", lastSkeleton);
+  noteTarget = "convStatus";
+  const btns = [$("btnConvert"), $("btnOffline")]; btns.forEach(b => b.disabled = true);
+  try {
+    let out;
+    if (useGemini) {
+      const label = `${s.kind === "shorts" ? "Shorts" : "ویدیوی بلند"}: ${s.parts.length} بخش. Gemini در حال نوشتن styleها`;
+      const t0 = Date.now();
+      status("convStatus", "info", label + " ... (معمولا چند دقیقه طول می کشد)");
+      ticker = setInterval(() => {
+        if ($("convStatus").textContent.startsWith(label)) status("convStatus", "info", `${label} ... ${fmt((Date.now() - t0) / 1000)} (معمولا چند دقیقه طول می کشد؛ صفحه را نبندید)`);
+      }, 1000);
+      const ask = async () => {
+        const r = await gemini($("textModel").value.trim(), { contents: [{ role: "user", parts: [{ text: PROMPT.replace("{script}", s.skeleton) }] }], generationConfig: { temperature: 0.2 } });
+        const txt = (r.candidates || []).flatMap(c => (c.content?.parts || []).map(p => p.text || "")).join("");
+        return txt.trim().replace(/^```[a-z]*\s*\n/i, "").replace(/\n```\s*$/, "").trim();
+      };
+      out = await ask();
+      if (check(s.skeleton, out).errors.length) {
+        status("convStatus", "info", "نتیجه اول قوانین را کامل رعایت نکرد؛ یک بار دیگر ...");
+        const again = await ask();
+        if (check(s.skeleton, again).errors.length < check(s.skeleton, out).errors.length) out = again;
+      }
+    } else {
+      out = offlineStyles(s.skeleton);
+    }
+    const header = `// ${($("episode").value || "episode").trim()} · voice: ${VOICE} · ${s.parts.length} parts\n\n`;
+    $("out").value = header + out + "\n"; store.set("out", $("out").value);
+    const r = check(s.skeleton, $("out").value); renderChecks(r);
+    status("convStatus", r.errors.length ? "warn" : "ok", r.errors.length ? "آماده شد ولی چند مورد باید درست شود (بخش ۲)." : `آماده شد: ${s.parts.length} بخش (${useGemini ? "Gemini" : "بدون اینترنت"}).`);
+    resetParts();
+  } catch (e) {
+    status("convStatus", "err", e instanceof UserError ? e.message : "خطا: " + (e.message || e));
+  } finally { clearInterval(ticker); btns.forEach(b => b.disabled = false); }
+}
+let ticker = null;
+$("btnConvert").onclick = () => run(true);
+$("btnOffline").onclick = () => run(false);
+$("btnCheck").onclick = () => renderChecks(check(lastSkeleton && $("out").value.includes("===") ? lastSkeleton : "", $("out").value));
+$("btnCopy").onclick = async () => { try { await navigator.clipboard.writeText($("out").value); status("convStatus", "ok", "کپی شد."); } catch { $("out").select(); status("convStatus", "info", "متن انتخاب شد؛ Ctrl+C بزنید."); } };
+$("btnTxt").onclick = () => download(new Blob([$("out").value], { type: "text/plain" }), (safeName() || "episode") + ".txt");
+
+/* ------------------------------------------------------------ step 3: audio */
+let dirHandle = null;
+const audio = {}; // name -> {blob, url, seconds, hash}
+$("btnFolder").onclick = async () => {
+  if (!window.showDirectoryPicker) return status("audioStatus", "warn", "این مرورگر انتخاب پوشه را پشتیبانی نمی کند (Chrome یا Edge لازم است). فایل ها دانلود می شوند.");
+  try { dirHandle = await showDirectoryPicker({ mode: "readwrite" }); $("folderName").textContent = "پوشه: " + dirHandle.name; }
+  catch (e) { if (e.name !== "AbortError") status("audioStatus", "err", "پوشه انتخاب نشد: " + e.message); }
+};
+function resetParts() {
+  for (const k in audio) { URL.revokeObjectURL(audio[k].url); delete audio[k]; }
+  const r = check("", $("out").value); renderPartRows(r.parts);
+}
+function renderPartRows(parts) {
+  const box = $("parts"); box.innerHTML = "";
+  for (const p of parts) {
+    const el = document.createElement("div"); el.className = "part"; el.id = "part-" + p.name;
+    const a = audio[p.name];
+    const w = wordsIn(p.blocks.map(b => b.text.join(" ")).join(" "));
+    el.innerHTML = `<div class="nm">${p.name}.wav</div><div class="meta">${p.blocks.length} blocks · ${w} words · ~${fmt(w / (/^short/i.test(p.name) ? WPM_SHORT : WPM_LONG) * 60)}</div><div class="ctl"></div>`;
+    const ctl = el.querySelector(".ctl");
+    const b = document.createElement("button"); b.className = "small"; b.textContent = a ? "Regenerate" : "Generate"; b.onclick = () => makeAudio([p.name], true); ctl.appendChild(b);
+    if (a) {
+      const au = document.createElement("audio"); au.controls = true; au.src = a.url; ctl.appendChild(au);
+      const d = document.createElement("button"); d.className = "small"; d.textContent = "Save"; d.onclick = () => saveFile(p.name + ".wav", a.blob, true); ctl.appendChild(d);
+      const t = document.createElement("span"); t.innerHTML = qcTag(p, a); ctl.appendChild(t);
+    }
+    box.appendChild(el);
+  }
+}
+function qcTag(p, a) {
+  const short = /^short/i.test(p.name);
+  const w = wordsIn(p.blocks.map(b => b.text.join(" ")).join(" "));
+  const exp = w / (short ? WPM_SHORT : WPM_LONG) * 60;
+  const dup = Object.entries(audio).some(([n, x]) => n !== p.name && x.hash === a.hash);
+  const msgs = [];
+  let lvl = "ok";
+  if (dup) { lvl = "fail"; msgs.push("DUPLICATE"); }
+  if (short && a.seconds > SHORT_MAX) { lvl = "fail"; msgs.push(`over ${SHORT_MAX}s`); }
+  if (Math.abs(a.seconds - exp) / exp > 0.25 && lvl !== "fail") { lvl = "warn"; msgs.push(`${Math.round((a.seconds - exp) / exp * 100)}% vs estimate`); }
+  return `<span class="tag ${lvl}">${fmt(a.seconds)} ${msgs.join(" · ") || "OK"}</span>`;
+}
+async function makeAudio(only, overwrite) {
+  const r = check("", $("out").value);
+  if (r.errors.length) { renderChecks(r); return status("audioStatus", "err", "اسکریپت هنوز خطا دارد (بخش ۲)."); }
+  noteTarget = "audioStatus";
+  const parts = r.parts.filter(p => !only || only.includes(p.name));
+  $("btnAudio").disabled = true;
+  let done = 0;
+  try {
+    for (const p of parts) {
+      if (audio[p.name] && !overwrite) { done++; continue; }
+      const row = $("part-" + p.name); if (row) row.dataset.s = "work";
+      status("audioStatus", "info", `در حال ساخت ${p.name}.wav (${done + 1} از ${parts.length}) ...`);
+      const body = {
+        contents: [{ role: "user", parts: p.blocks.map(b => ({ text: b.text.join(" "), ...(b.style ? { speechMetadata: { style: b.style } } : {}) })) }],
+        generationConfig: { responseModalities: ["AUDIO"], speechConfig: { voiceConfig: { voice: VOICE } } },
+      };
+      const resp = await gemini($("ttsModel").value.trim(), body);
+      const blob = toWav(resp);
+      const seconds = await wavSeconds(blob);
+      const hash = await sha256(blob);
+      if (audio[p.name]) URL.revokeObjectURL(audio[p.name].url);
+      audio[p.name] = { blob, url: URL.createObjectURL(blob), seconds, hash };
+      if (dirHandle) await saveFile(p.name + ".wav", blob, false);
+      done++; $("bar").style.width = (done / parts.length * 100) + "%";
+      renderPartRows(r.parts);
+      await sleep(1500);
+    }
+    const saved = dirHandle ? ` فایل ها با نام نهایی در پوشه «${dirHandle.name}» ذخیره شدند.` : " برای ذخیره، دکمه Save هر بخش را بزنید (یا اول پوشه را انتخاب کنید).";
+    status("audioStatus", "ok", `تمام شد: ${done} فایل.${saved}\nگوش کنید: تگی بلند خوانده نشده باشد، صدا همه جا Enceladus باشد، اسم ها درست تلفظ شده باشند.`);
+  } catch (e) {
+    status("audioStatus", "err", e instanceof UserError ? e.message : "خطا: " + (e.message || e));
+  } finally { $("btnAudio").disabled = false; $("bar").style.width = "0"; renderPartRows(r.parts); }
+}
+$("btnAudio").onclick = () => makeAudio(null, false);
+
+function toWav(resp) {
+  const chunks = [];
+  for (const c of resp.candidates || []) for (const p of c.content?.parts || []) { const d = p.inlineData || p.inline_data; if (d?.data) chunks.push(b64(d.data)); }
+  if (!chunks.length) throw new UserError("پاسخ گوگل صدا نداشت: " + JSON.stringify(resp).slice(0, 200));
+  const first = chunks[0];
+  if (first[0] === 0x52 && first[1] === 0x49 && first[2] === 0x46 && first[3] === 0x46) return new Blob([first], { type: "audio/wav" });
+  const len = chunks.reduce((n, c) => n + c.length, 0);
+  const buf = new ArrayBuffer(44 + len), v = new DataView(buf), u8 = new Uint8Array(buf);
+  const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  w(0, "RIFF"); v.setUint32(4, 36 + len, true); w(8, "WAVE"); w(12, "fmt "); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, 24000, true); v.setUint32(28, 48000, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, "data"); v.setUint32(40, len, true);
+  let o = 44; for (const c of chunks) { u8.set(c, o); o += c.length; }
+  return new Blob([buf], { type: "audio/wav" });
+}
+function b64(s) { const bin = atob(s); const u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u; }
+async function wavSeconds(blob) {
+  const v = new DataView(await blob.arrayBuffer());
+  const rate = v.getUint32(24, true), bytes = v.getUint32(28, true);
+  let off = 12; while (off + 8 <= v.byteLength) { const id = String.fromCharCode(v.getUint8(off), v.getUint8(off + 1), v.getUint8(off + 2), v.getUint8(off + 3)); const sz = v.getUint32(off + 4, true); if (id === "data") return sz / bytes; off += 8 + sz; }
+  return (v.byteLength - 44) / (rate * 2);
+}
+async function sha256(blob) { const d = await crypto.subtle.digest("SHA-256", await blob.arrayBuffer()); return [...new Uint8Array(d)].map(x => x.toString(16).padStart(2, "0")).join(""); }
+async function saveFile(name, blob, interactive) {
+  if (dirHandle) {
+    try { const fh = await dirHandle.getFileHandle(name, { create: true }); const ws = await fh.createWritable(); await ws.write(blob); await ws.close(); if (interactive) status("audioStatus", "ok", `${name} در پوشه «${dirHandle.name}» ذخیره شد.`); return; }
+    catch (e) { status("audioStatus", "warn", "ذخیره در پوشه نشد، دانلود می شود: " + e.message); }
+  }
+  download(blob, name);
+}
+function download(blob, name) { const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 5000); }
+function safeName() { return ($("episode").value || "").trim().replace(/[^\w.-]+/g, "_"); }
+
+/* ------------------------------------------------------------ start */
+if (!window.showDirectoryPicker) { $("btnFolder").hidden = true; $("folderName").textContent = "روی این دستگاه هر فایل با دکمه Save دانلود می شود."; }
+if ($("out").value.trim()) { renderChecks(check(lastSkeleton, $("out").value)); renderPartRows(check("", $("out").value).parts); }
+else $("btnAudio").disabled = true;
+</script>
+</body>
+</html>
