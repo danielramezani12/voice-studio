@@ -237,14 +237,26 @@ function structure(text) {
 }
 
 /* ------------------------------------------------------------ step 1b: styles with Gemini */
-const PROMPT = `Turn this narration into a TTS script for Gemini TTS. Follow every rule.
+// A small, fixed palette keeps one consistent narrator across the whole episode.
+// Every style starts with the same anchor ("calm ... narrator"), so a style change shifts the mood, not the character.
+const STYLE_PALETTE = [
+  "calm documentary narrator, unhurried",
+  "calm narrator, quietly tense",
+  "calm narrator, low and serious",
+  "calm narrator, warm and direct",
+  "calm narrator, dry and matter-of-fact",
+  "calm narrator, hushed and thoughtful",
+];
+const PROMPT = `Turn this narration into a TTS script for Gemini TTS. The goal is ONE calm, natural documentary narrator from the first word to the last, like a person telling a true story, not an actor switching roles. Follow every rule.
 
 RULES
-1. Do not change, add, remove or reorder any spoken word. You may only: group lines into blocks, CAPITALIZE one key word in a few blocks (sparingly, not in every block), adjust punctuation (commas, --, ...), and write letters that are spoken one by one with hyphens (CEO -> C-E-O, DVDs -> D-V-Ds).
+1. Do not change, add, remove or reorder any spoken word. You may only: group lines into blocks, adjust punctuation (commas, --, ...), write letters that are spoken one by one with hyphens (CEO -> C-E-O, DVDs -> D-V-Ds), and CAPITALIZE at most one key word per part, only where a narrator would really stress it.
 2. Keep every "=== <name>" line exactly as it is, in the same place. Do not add or remove parts.
-3. Inside each part, start each block with a line "# style: <style>" followed by the block's text. Start a new block whenever the emotion or pace changes. Aim for 4-10 blocks per long part and 3-6 per Short.
-4. Each style is 3 to 8 words and describes delivery only (emotion, pace, tone). Examples: "calm documentary narrator, steady", "low and tense, restrained urgency", "grave and serious, slower", "dry, matter-of-fact", "hushed and thoughtful, slow", "calm and warm", "direct to the listener, slower". Never mention the voice, gender, age, accent, pitch or loudness. Never write "same voice", "flat", "monotone" or "no emotion". No hype words.
-5. Pauses: you may add <short pause> or <long pause> between sentences where a beat helps, especially before a reveal and after a question to the listener ("So, what would you do? <long pause>"). Only these angle-bracket tags are allowed: <short pause>, <long pause>, <breath>, <sigh>, <exhales>. Never use square brackets: they are read aloud.
+3. Few blocks. Inside each part, start each block with a line "# style: <style>" followed by the block's text. Use 2 to 4 blocks per long part and 1 to 3 per Short. Change the block only when the mood clearly changes for several sentences, never for a single sentence. Two blocks in a row never have the same style.
+4. Styles come ONLY from this list, copied exactly:
+${STYLE_PALETTE.map(s => "   - " + s).join("\n")}
+   Use "${STYLE_PALETTE[0]}" for most of the text. Use the others only where they clearly fit: tension, grave facts, speaking to the listener or asking them a question, dry irony, the final reveal.
+5. Let punctuation carry the rhythm. Do not add <short pause>. Add <long pause> only right after a direct question to the listener (for example "So, what would you do? <long pause>"), at most one per part. Never use any other tag, and never use square brackets: they are read aloud.
 6. Output only the script. No explanations, no code fences.
 
 SCRIPT
@@ -288,18 +300,23 @@ let noteTarget = "convStatus";
 async function note(msg) { status(noteTarget, "info", msg); }
 
 function offlineStyles(skeleton) {
+  // One block per run of paragraphs with the same style; the base style for almost everything.
   const out = [];
+  let style = null, buf = [], pausedInPart = false;
+  const flush = () => { if (buf.length) { out.push("# style: " + style); out.push(buf.join(" ")); buf = []; } };
   for (const block of skeleton.split(/\n\s*\n/)) {
-    for (const line of block.split("\n")) if (line.startsWith("===")) out.push(line);
-    const text = block.split("\n").filter(l => !l.startsWith("===")).join(" ").trim();
+    for (const line of block.split("\n")) if (line.startsWith("===")) { flush(); style = null; pausedInPart = false; out.push(line); }
+    let text = block.split("\n").filter(l => !l.startsWith("===")).join(" ").trim();
     if (!text) continue;
-    let style = "calm documentary narrator, steady";
-    if (/what would you do|your call|would you/i.test(text)) style = "direct to the listener, slower";
-    else if (/^problem (one|two|three|four|five|six)\b/i.test(text)) style = "focused and steady, clear";
-    else if (/full story is on the channel/i.test(text) && wordsIn(text) < 12) style = "calm and warm, inviting";
-    out.push("# style: " + style);
-    out.push(text.replace(/\?\s+(?=[A-Z])/g, "? <short pause> "));
+    let s = STYLE_PALETTE[0];
+    if (/what would you do|your call|would you still/i.test(text)) {
+      s = STYLE_PALETTE[3];
+      if (!pausedInPart) { text = text.replace(/(what would you do\?|your call\.|would you still[^?]*\?)/i, "$1 <long pause>"); pausedInPart = true; }
+    }
+    if (s !== style) { flush(); style = s; }
+    buf.push(text);
   }
+  flush();
   return out.join("\n");
 }
 
@@ -359,6 +376,15 @@ function check(skeleton, text) {
     const d = firstDiffs(tokens(skeleton), tokens(text));
     if (d.length) errors.push("کلمات متن تغییر کرده اند (نباید تغییر کنند):\n" + d.join("\n"));
   }
+  // Naturalness checks (warnings only, the user may edit freely).
+  for (const p of parts) {
+    const isShort = /^short/i.test(p.name), maxB = isShort ? 3 : 5;
+    if (p.blocks.length > maxB) warns.push(`[${p.name}] ${p.blocks.length} بلوک دارد. بیشتر از ${maxB} بلوک باعث می شود لحن مدام عوض شود و صدا غیرطبیعی شود.`);
+    const pauses = (p.blocks.map(b => b.text.join(" ")).join(" ").match(/<(short|long) pause>/g) || []).length;
+    if (pauses > 2) warns.push(`[${p.name}] ${pauses} تگ مکث دارد. مکث زیاد ریتم را بریده بریده می کند؛ بگذارید علامت گذاری ریتم را بسازد.`);
+  }
+  const offPalette = [...new Set(parts.flatMap(p => p.blocks.map(b => b.style)).filter(s => s && !STYLE_PALETTE.includes(s)))];
+  if (offPalette.length) warns.push(`styleهای خارج از فهرست ثابت (${offPalette.length} مورد) لحن را ناهماهنگ می کنند: ${offPalette.slice(0, 4).join(" | ")}`);
   const short = parts.filter(p => /^short/i.test(p.name)).map(p => [p.name, wordsIn(p.blocks.map(b => b.text.join(" ")).join(" ")) / WPM_SHORT * 60]);
   for (const [nm, s] of short) if (s > SHORT_MAX - 4) warns.push(`[${nm}] حدود ${s.toFixed(0)} ثانیه تخمین زده می شود؛ Short باید زیر ${SHORT_MAX} ثانیه بماند.`);
   return { errors, warns, parts };
