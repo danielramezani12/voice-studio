@@ -98,6 +98,21 @@ details summary { cursor: pointer; color: var(--dim); font-size: .85rem; }
     </div>
     <p class="hint">کلید را در <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener" style="color:var(--cyan)">aistudio.google.com ← Get API key</a> بسازید. همین یک کلید هم برای آماده کردن اسکریپت و هم برای ساخت صدا استفاده می شود. روی هر دستگاه یک بار وارد کنید. VPN باید روشن باشد.</p>
     <p class="status" id="keyStatus" hidden></p>
+    <details id="ghBox">
+      <summary>تاریخچه روی GitHub خصوصی (همگام بین همه دستگاه ها)</summary>
+      <div class="row" style="margin-top:10px">
+        <label for="ghRepo">مخزن خصوصی (owner/name)
+          <input type="text" id="ghRepo" placeholder="danielramezani12/voice-studio-history">
+        </label>
+        <label for="ghToken">توکن GitHub (فقط در همین مرورگر ذخیره می شود)
+          <input type="password" id="ghToken" autocomplete="off" placeholder="github_pat_...">
+        </label>
+        <button id="btnGhTest">تست اتصال</button>
+        <button id="btnGhClear">پاک کردن توکن</button>
+      </div>
+      <p class="hint">هر «آماده کن» یک پروژه جدید در این مخزن می سازد (متن، اسکریپت و صداها). مخزن حتما Private باشد و توکن فقط به همین یک مخزن دسترسی Contents داشته باشد.</p>
+      <p class="status" id="ghStatus" hidden></p>
+    </details>
   </section>
 
   <section>
@@ -158,13 +173,23 @@ details summary { cursor: pointer; color: var(--dim); font-size: .85rem; }
       <p class="hint">صدا همیشه Enceladus است. اگر گوگل نام مدل را عوض کند و خطای 404 بیاید، نام جدید را اینجا بگذارید.</p>
     </details>
   </section>
+
+  <section>
+    <div class="row" style="justify-content:space-between">
+      <h2><span class="n">4</span>History (پروژه های قبلی)</h2>
+      <button class="small" id="btnHistory">تازه کردن</button>
+    </div>
+    <p class="hint" id="projLine"></p>
+    <p class="status" id="histStatus" hidden></p>
+    <div class="parts" id="history"></div>
+  </section>
 </div>
 
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
 const VOICE = "Enceladus";
-const APP_VERSION = "2026-11-10c";   // bump on every release; "Prepare" reloads when a newer one is online
+const APP_VERSION = "2026-11-10d";   // bump on every release; "Prepare" reloads when a newer one is online
 const API = "https://generativelanguage.googleapis.com/v1beta/models/";
 const DEFAULTS = { ttsModel: "gemini-3.8-flash-tts", textModel: "gemini-3.8-flash" };
 const WPM_LONG = 145, WPM_SHORT = 150, SHORT_MAX = 59;
@@ -642,6 +667,7 @@ async function run(useGemini) {
     const offlineFallback = usedNote.includes("بدون اینترنت");
     status("convStatus", r.errors.length || offlineFallback ? "warn" : "ok", (r.errors.length ? "آماده شد ولی چند مورد باید درست شود (بخش ۲)." : `آماده شد: ${s.parts.length} بخش (${useGemini && !offlineFallback ? "Gemini" : "بدون اینترنت"}).`) + usedNote + oldNote);
     resetParts();
+    startProject(s, src);            // new project; the previous one moves to History
   } catch (e) {
     status("convStatus", "err", e instanceof UserError ? e.message : "خطا: " + (e.message || e));
   } finally { clearInterval(ticker); btns.forEach(b => b.disabled = false); }
@@ -745,6 +771,7 @@ async function makeAudio(only, overwrite) {
       if (audio[p.name]) URL.revokeObjectURL(audio[p.name].url);
       audio[p.name] = { blob, url: URL.createObjectURL(blob), seconds, hash };
       if (dirHandle) await saveFile(p.name + ".wav", blob, false);
+      syncAudio(p.name, blob);
       done++; $("bar").style.width = (done / parts.length * 100) + "%";
       renderPartRows(r.parts);
       await sleep(1500);
@@ -789,11 +816,157 @@ async function saveFile(name, blob, interactive) {
 function download(blob, name) { const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 5000); }
 function safeName() { return ($("episode").value || "").trim().replace(/[^\w.-]+/g, "_"); }
 
+/* ------------------------------------------------------------ history (private GitHub repo) */
+// Layout in the repo:  projects/<YYYY-MM-DD_HHMMSS>_<name>/{meta.json, source.txt, script.txt, audio/<part>.wav}
+const GH_API = "https://api.github.com";
+$("ghRepo").value = store.get("ghRepo", "danielramezani12/voice-studio-history");
+$("ghToken").value = store.get("ghToken", "");
+$("ghRepo").addEventListener("input", () => store.set("ghRepo", $("ghRepo").value.trim()));
+$("ghToken").addEventListener("input", () => { store.set("ghToken", $("ghToken").value.trim()); status("ghStatus", "ok", "توکن در این مرورگر ذخیره شد."); });
+$("btnGhClear").onclick = () => { $("ghToken").value = ""; store.set("ghToken", ""); status("ghStatus", "info", "توکن از این مرورگر پاک شد."); };
+const ghReady = () => !!($("ghRepo").value.trim() && $("ghToken").value.trim());
+
+function ghHint(code) {
+  return {
+    401: "توکن GitHub پذیرفته نشد (401). توکن را دوباره بسازید و کپی کنید.",
+    403: "GitHub اجازه نداد (403). توکن باید به این مخزن دسترسی Contents: Read and write داشته باشد.",
+    404: "مخزن پیدا نشد (404). نام مخزن را بررسی کنید و مطمئن شوید توکن به این مخزن دسترسی دارد.",
+    409: "تداخل در GitHub (409). یک بار دیگر امتحان کنید.",
+    422: "GitHub فایل را نپذیرفت (422). احتمالا فایل تغییر کرده؛ دوباره امتحان کنید.",
+  }[code] || `خطای GitHub (${code}).`;
+}
+async function gh(method, path, body, raw) {
+  const res = await fetch(`${GH_API}/repos/${$("ghRepo").value.trim()}${path}`, {
+    method,
+    headers: { Authorization: `Bearer ${$("ghToken").value.trim()}`, "X-GitHub-Api-Version": "2022-11-28",
+      Accept: raw ? "application/vnd.github.raw+json" : "application/vnd.github+json",
+      ...(body ? { "Content-Type": "application/json" } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (method === "GET" && res.status === 404) return null;
+  if (!res.ok) { const e = new UserError(ghHint(res.status)); e.code = res.status; throw e; }
+  return raw ? res.blob() : res.json();
+}
+function b64FromBytes(u8) { let s = ""; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); }
+async function putFile(path, data, message) {
+  const u8 = typeof data === "string" ? new TextEncoder().encode(data) : new Uint8Array(await data.arrayBuffer());
+  const shas = project?.shas || {};
+  const body = { message, content: b64FromBytes(u8), ...(shas[path] ? { sha: shas[path] } : {}) };
+  let r;
+  try { r = await gh("PUT", `/contents/${path}`, body); }
+  catch (e) {
+    if (e.code !== 409 && e.code !== 422) throw e;
+    const cur = await gh("GET", `/contents/${path}`);            // file changed elsewhere: retry with the current sha
+    r = await gh("PUT", `/contents/${path}`, { ...body, sha: cur?.sha });
+  }
+  if (project) { project.shas[path] = r.content.sha; store.set("project", project); }
+  return r;
+}
+
+$("btnGhTest").onclick = async () => {
+  if (!ghReady()) return status("ghStatus", "err", "اول نام مخزن و توکن را وارد کنید.");
+  status("ghStatus", "info", "در حال تست اتصال به GitHub ...");
+  try {
+    const res = await fetch(`${GH_API}/repos/${$("ghRepo").value.trim()}`, { headers: { Authorization: `Bearer ${$("ghToken").value.trim()}`, Accept: "application/vnd.github+json" } });
+    if (!res.ok) return status("ghStatus", "err", ghHint(res.status));
+    const repo = await res.json();
+    if (!repo.private) return status("ghStatus", "err", "این مخزن عمومی (Public) است! متن ها و صداها برای همه دیده می شوند. یک مخزن Private بسازید یا این را در Settings خصوصی کنید.");
+    if (repo.permissions && !repo.permissions.push) return status("ghStatus", "err", "توکن فقط اجازه خواندن دارد. در تنظیمات توکن، Contents را روی Read and write بگذارید.");
+    status("ghStatus", "ok", `اتصال درست است: مخزن خصوصی ${repo.full_name}. تاریخچه از این به بعد اینجا ذخیره می شود.`);
+    loadHistory();
+  } catch { status("ghStatus", "err", "اتصال به GitHub برقرار نشد. اینترنت را بررسی کنید."); }
+};
+
+// The current project: created on every "Prepare"; the previous one then shows up in History.
+let project = store.get("project", null);
+function projectStamp(d = new Date()) {
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+function showProjectLine() {
+  $("projLine").textContent = project ? `پروژه فعلی: ${project.name} (${project.id.slice(0, 10)})${ghReady() ? "" : " · تاریخچه GitHub تنظیم نشده؛ فقط روی همین صفحه است."}` : "هنوز پروژه ای ساخته نشده.";
+}
+async function startProject(s, source) {
+  const name = safeName() || "episode";
+  project = { id: `${projectStamp()}_${name}`, name, created: new Date().toISOString(), kind: s.kind, parts: s.parts.map(p => p.name), shas: {}, scriptSent: "" };
+  store.set("project", project); showProjectLine();
+  if (!ghReady()) return;
+  const dir = `projects/${project.id}`;
+  status("histStatus", "info", "در حال ذخیره پروژه در GitHub ...");
+  try {
+    await putFile(`${dir}/source.txt`, source, `New project ${project.id}: source`);
+    await putFile(`${dir}/script.txt`, $("out").value, `${project.id}: script`);
+    await putFile(`${dir}/meta.json`, JSON.stringify({ name, created: project.created, kind: s.kind, parts: project.parts, voice: VOICE, app: APP_VERSION }, null, 2), `${project.id}: meta`);
+    project.scriptSent = $("out").value; store.set("project", project);
+    status("histStatus", "ok", `پروژه «${name}» در GitHub ذخیره شد. پروژه قبلی به History رفت.`);
+    loadHistory();
+  } catch (e) { status("histStatus", "err", "ذخیره در GitHub نشد: " + (e.message || e)); }
+}
+async function syncAudio(part, blob) {
+  if (!project || !ghReady()) return;
+  const dir = `projects/${project.id}`;
+  try {
+    if ($("out").value !== project.scriptSent) {             // the script was edited after "Prepare"
+      await putFile(`${dir}/script.txt`, $("out").value, `${project.id}: script edited`);
+      project.scriptSent = $("out").value; store.set("project", project);
+    }
+    await putFile(`${dir}/audio/${part}.wav`, blob, `${project.id}: ${part}.wav`);
+    status("histStatus", "ok", `${part}.wav در GitHub ذخیره شد.`);
+  } catch (e) { status("histStatus", "err", `ذخیره ${part}.wav در GitHub نشد: ` + (e.message || e)); }
+}
+
+async function loadHistory() {
+  const box = $("history"); showProjectLine();
+  if (!ghReady()) { box.innerHTML = '<div class="hint">برای دیدن History، در بخش ۰ «تاریخچه روی GitHub خصوصی» را تنظیم کنید.</div>'; return; }
+  status("histStatus", "info", "در حال خواندن History از GitHub ...");
+  try {
+    const list = (await gh("GET", "/contents/projects")) || [];
+    const dirs = list.filter(x => x.type === "dir" && x.name !== project?.id).sort((a, b) => b.name.localeCompare(a.name));
+    box.innerHTML = dirs.length ? "" : '<div class="hint">هنوز پروژه قبلی ای در History نیست.</div>';
+    for (const d of dirs) {
+      const [date, time, ...rest] = d.name.split("_");
+      const row = document.createElement("div"); row.className = "part";
+      row.innerHTML = `<div class="nm">${escapeHtml(rest.join("_") || "episode")}</div><div class="meta">${date} ${time ? time.replace(/(\d\d)(\d\d)(\d\d)/, "$1:$2") : ""}</div><div class="ctl"></div>`;
+      const btn = document.createElement("button"); btn.className = "small"; btn.textContent = "فایل ها";
+      btn.onclick = () => showProjectFiles(d.name, row, btn);
+      row.querySelector(".ctl").appendChild(btn);
+      box.appendChild(row);
+    }
+    $("histStatus").hidden = true;
+  } catch (e) { status("histStatus", "err", "خواندن History نشد: " + (e.message || e)); }
+}
+async function showProjectFiles(id, row, btn) {
+  btn.disabled = true; btn.textContent = "...";
+  try {
+    const files = ((await gh("GET", `/contents/projects/${id}`)) || []).filter(f => f.type === "file" && f.name !== "meta.json");
+    const audioFiles = ((await gh("GET", `/contents/projects/${id}/audio`)) || []).filter(f => f.type === "file");
+    const all = [...files, ...audioFiles.sort((a, b) => natural(a.name, b.name))];
+    const ctl = row.querySelector(".ctl"); ctl.innerHTML = "";
+    if (!all.length) ctl.textContent = "فایلی نیست.";
+    for (const f of all) {
+      const b = document.createElement("button"); b.className = "small";
+      b.textContent = `${f.name} (${f.size > 1e6 ? (f.size / 1e6).toFixed(1) + " MB" : Math.ceil(f.size / 1e3) + " KB"})`;
+      b.onclick = async () => {
+        b.disabled = true;
+        try { download(await gh("GET", `/contents/${f.path}`, null, true), f.name); }
+        catch (e) { status("histStatus", "err", `دانلود ${f.name} نشد: ` + (e.message || e)); }
+        b.disabled = false;
+      };
+      ctl.appendChild(b);
+    }
+  } catch (e) { status("histStatus", "err", "خواندن فایل های پروژه نشد: " + (e.message || e)); btn.disabled = false; btn.textContent = "فایل ها"; }
+}
+function natural(a, b) { return a.localeCompare(b, undefined, { numeric: true }); }
+function escapeHtml(s) { return s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+$("btnHistory").onclick = () => loadHistory();
+
 /* ------------------------------------------------------------ start */
 if (!window.showDirectoryPicker) { $("btnFolder").hidden = true; $("folderName").textContent = "روی این دستگاه هر فایل با دکمه Save دانلود می شود."; }
 if ($("out").value.trim()) { renderChecks(check(lastSkeleton, $("out").value)); renderPartRows(check("", $("out").value).parts); }
 else $("btnAudio").disabled = true;
 $("appVersion").textContent = "v" + APP_VERSION;
+showProjectLine();
+if (ghReady()) loadHistory(); else $("history").innerHTML = '<div class="hint">برای دیدن History، در بخش ۰ «تاریخچه روی GitHub خصوصی» را تنظیم کنید.</div>';
 // After a self-update reload, continue the "Prepare" the user had pressed.
 try {
   if (sessionStorage.getItem("br-vs:autorun") === "1") {
