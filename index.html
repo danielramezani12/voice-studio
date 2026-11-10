@@ -229,11 +229,56 @@ function parseLong(text) {
   return parts.map((ps, i) => ({ name: String(i + 1), paras: ps }));
 }
 
+/* Old-style scripts: a direction paragraph ("You are a calm narrator...") followed by lines that
+   start with square-bracket mood tags ("[dry] Customers hated them."). The direction text is not
+   spoken; it is removed. Mood tags are kept as hints for styling; event tags are converted. */
+const OLD_TAG_LINE = /^\s*\[(?!VISUAL)[^\]]+\]/i;
+function isOldStyle(text) {
+  const lines = text.split("\n").map(l => l.trim()).filter(Boolean);
+  return lines.filter(l => OLD_TAG_LINE.test(l)).length >= 2;
+}
+function convertOld(text) {
+  const lines = text.replace(/\r\n?/g, "\n").split("\n").map(l => l.trim());
+  const first = lines.findIndex(l => OLD_TAG_LINE.test(l));
+  const removed = [], out = [];
+  lines.forEach((l, i) => {
+    if (!l) return;
+    if (i < first && !/\[[^\]]+\]/.test(l)) { removed.push(l); return; }                 // direction paragraph
+    if (/^(please\s+)?use\s+(the\s+)?voice\b|^(style|audio profile|director'?s? notes?)\s*[:\-]/i.test(l)) { removed.push(l); return; }
+    let s = cleanLine(l)
+      .replace(/\[\s*short pause\s*\]/gi, " ")                                            // punctuation carries the rhythm
+      .replace(/\[\s*long pause\s*\]/gi, " <long pause> ")
+      .replace(/\[\s*(breath|sigh|exhales)\s*\]/gi, " <$1> ");
+    // keep leading mood tags as one hint, drop any other bracket text
+    const lead = (s.match(/^(\s*\[[^\]]+\]\s*)+/) || [""])[0];
+    const hint = (lead.match(/\[([^\]]+)\]/g) || []).map(x => x.slice(1, -1)).join(", ");
+    s = s.slice(lead.length).replace(/\[[^\]]+\]/g, " ").replace(/\s{2,}/g, " ").trim();
+    if (s) out.push(hint ? `[${hint}] ${s}` : s);
+  });
+  return { lines: out, removed };
+}
+
 function structure(text) {
-  const kind = $("kind").value === "auto" ? (detectShorts(text) ? "shorts" : "long") : $("kind").value;
+  let removed = [], kind;
+  if (isOldStyle(text) && !detectShorts(text)) {
+    const conv = convertOld(text); removed = conv.removed;
+    const words = wordsIn(conv.lines.join(" ").replace(/\[[^\]]*\]/g, " "));
+    kind = $("kind").value === "auto" ? (words <= 170 ? "shorts" : "long") : $("kind").value;
+    let parts;
+    if (kind === "shorts") {
+      const ls = conv.lines.slice();
+      if ($("fullStory").checked && !ls.join(" ").toLowerCase().includes(FULL_STORY.toLowerCase().slice(0, -1))) ls.push(FULL_STORY);
+      parts = [{ name: "short1", paras: ls.map(l => [l]) }];
+    } else {
+      parts = parseLong(conv.lines.join("\n\n"));
+    }
+    const skeleton = parts.map(p => `=== ${p.name}\n` + p.paras.map(ls => ls.join("\n")).join("\n\n")).join("\n\n");
+    return { kind, parts, skeleton, removed, oldStyle: true };
+  }
+  kind = $("kind").value === "auto" ? (detectShorts(text) ? "shorts" : "long") : $("kind").value;
   const parts = kind === "shorts" ? parseShorts(text) : parseLong(text);
   const skeleton = parts.map(p => `=== ${p.name}\n` + p.paras.map(ls => ls.join("\n")).join("\n\n")).join("\n\n");
-  return { kind, parts, skeleton };
+  return { kind, parts, skeleton, removed, oldStyle: false };
 }
 
 /* ------------------------------------------------------------ step 1b: styles with Gemini */
@@ -299,24 +344,55 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 let noteTarget = "convStatus";
 async function note(msg) { status(noteTarget, "info", msg); }
 
+// Map an old mood hint ("dry irony", "slow, final") to the closest palette style.
+function paletteFor(hint) {
+  const h = (hint || "").toLowerCase();
+  if (!h) return null;
+  if (/hush|whisper|wistful|reflect|thoughtful|quiet/.test(h)) return STYLE_PALETTE[5];
+  if (/dry|iron|matter|amused|deadpan|wry/.test(h)) return STYLE_PALETTE[4];
+  if (/grave|serious|final|slow|heavy|weight|somber|sombre|flat|grim/.test(h)) return STYLE_PALETTE[2];
+  if (/tense|intrigu|suspense|uneasy|ominous|urgent/.test(h)) return STYLE_PALETTE[1];
+  if (/warm|explain|direct|friend|listener|question|inviting|short/.test(h)) return STYLE_PALETTE[3];
+  return STYLE_PALETTE[0];
+}
 function offlineStyles(skeleton) {
-  // One block per run of paragraphs with the same style; the base style for almost everything.
   const out = [];
-  let style = null, buf = [], pausedInPart = false;
-  const flush = () => { if (buf.length) { out.push("# style: " + style); out.push(buf.join(" ")); buf = []; } };
-  for (const block of skeleton.split(/\n\s*\n/)) {
-    for (const line of block.split("\n")) if (line.startsWith("===")) { flush(); style = null; pausedInPart = false; out.push(line); }
-    let text = block.split("\n").filter(l => !l.startsWith("===")).join(" ").trim();
-    if (!text) continue;
-    let s = STYLE_PALETTE[0];
-    if (/what would you do|your call|would you still/i.test(text)) {
-      s = STYLE_PALETTE[3];
-      if (!pausedInPart) { text = text.replace(/(what would you do\?|your call\.|would you still[^?]*\?)/i, "$1 <long pause>"); pausedInPart = true; }
+  for (const partText of skeleton.split(/^(?====)/m)) {
+    const head = partText.split("\n")[0];
+    if (!head.startsWith("===")) continue;
+    const isShort = /^===\s*short/i.test(head), maxBlocks = isShort ? 3 : 4;
+    const blocks = []; let paused = false;
+    for (const para of partText.split("\n").slice(1).join("\n").split(/\n\s*\n/)) {
+      const lines = para.split("\n").map(l => l.trim()).filter(Boolean);
+      if (!lines.length) continue;
+      const hint = lines.map(l => (l.match(/^\[([^\]]+)\]/) || [])[1]).find(Boolean);
+      let text = lines.map(l => l.replace(/^\[[^\]]+\]\s*/, "")).join(" ").replace(/\bDVDs\b/g, "D-V-Ds").replace(/\bCEO\b/g, "C-E-O");
+      let style = paletteFor(hint) || STYLE_PALETTE[0];
+      if (/what would you do|your call|would you still/i.test(text)) {
+        style = STYLE_PALETTE[3];
+        if (!paused && !/<long pause>/.test(text)) { text = text.replace(/(what would you do\?|your call\.|would you still[^?]*\?)/i, "$1 <long pause>"); }
+        paused = true;
+      }
+      const last = blocks[blocks.length - 1];
+      if (last && last.style === style) last.text.push(text); else blocks.push({ style, text: [text] });
     }
-    if (s !== style) { flush(); style = s; }
-    buf.push(text);
+    // Too many blocks makes the voice keep changing: fold the shortest block into a neighbour.
+    while (blocks.length > maxBlocks) {
+      let k = 0, best = Infinity;
+      // serious and thoughtful turns matter most for the story: fold them last
+      const weight = (b) => wordsIn(b.text.join(" ")) * ([STYLE_PALETTE[2], STYLE_PALETTE[5]].includes(b.style) ? 4 : 1);
+      blocks.forEach((b, i) => { const w = weight(b); if (w < best) { best = w; k = i; } });
+      const into = k > 0 ? k - 1 : 1;
+      if (into < k) blocks[into].text.push(...blocks[k].text); else blocks[into].text.unshift(...blocks[k].text);
+      blocks.splice(k, 1);
+      for (let i = blocks.length - 1; i > 0; i--) if (blocks[i].style === blocks[i - 1].style) { blocks[i - 1].text.push(...blocks[i].text); blocks.splice(i, 1); }
+    }
+    // keep only one <long pause> per part
+    let seen = false;
+    for (const b of blocks) b.text = b.text.map(t => t.replace(/<long pause>/g, m => (seen ? "" : (seen = true, m)))).map(t => t.replace(/\s{2,}/g, " ").trim());
+    out.push(head);
+    for (const b of blocks) { out.push("# style: " + b.style); out.push(b.text.join(" ")); }
   }
-  flush();
   return out.join("\n");
 }
 
@@ -437,7 +513,8 @@ async function run(useGemini) {
     const header = `// ${($("episode").value || "episode").trim()} · voice: ${VOICE} · ${s.parts.length} parts\n\n`;
     $("out").value = header + out + "\n"; store.set("out", $("out").value);
     const r = check(s.skeleton, $("out").value); renderChecks(r);
-    status("convStatus", r.errors.length ? "warn" : "ok", r.errors.length ? "آماده شد ولی چند مورد باید درست شود (بخش ۲)." : `آماده شد: ${s.parts.length} بخش (${useGemini ? "Gemini" : "بدون اینترنت"}).`);
+    const oldNote = s.oldStyle ? `\nاسکریپت قدیمی تشخیص داده شد: ${s.removed.length} خط دستورالعمل گوینده حذف شد (گفته نمی شود) و تگ های براکتی به styleهای ثابت تبدیل شدند.` : "";
+    status("convStatus", r.errors.length ? "warn" : "ok", (r.errors.length ? "آماده شد ولی چند مورد باید درست شود (بخش ۲)." : `آماده شد: ${s.parts.length} بخش (${useGemini ? "Gemini" : "بدون اینترنت"}).`) + oldNote);
     resetParts();
   } catch (e) {
     status("convStatus", "err", e instanceof UserError ? e.message : "خطا: " + (e.message || e));
