@@ -84,7 +84,7 @@ details summary { cursor: pointer; color: var(--dim); font-size: .85rem; }
 <div class="wrap">
   <header>
     <h1><small>BLAST RADIUS · VOICE STUDIO</small>متن کلاد را بده، استایل و تکست آماده بگیر</h1>
-    <div class="voice">voice <b>Enceladus</b> · <span id="modelLine"></span> · <span title="app version">v2026-11-10b</span></div>
+    <div class="voice">voice <b>Enceladus</b> · <span id="modelLine"></span> · <span title="app version" id="appVersion"></span></div>
   </header>
 
   <section>
@@ -164,6 +164,7 @@ details summary { cursor: pointer; color: var(--dim); font-size: .85rem; }
 "use strict";
 const $ = (id) => document.getElementById(id);
 const VOICE = "Enceladus";
+const APP_VERSION = "2026-11-10c";   // bump on every release; "Prepare" reloads when a newer one is online
 const API = "https://generativelanguage.googleapis.com/v1beta/models/";
 const DEFAULTS = { ttsModel: "gemini-3.8-flash-tts", textModel: "gemini-3.8-flash" };
 const WPM_LONG = 145, WPM_SHORT = 150, SHORT_MAX = 59;
@@ -646,7 +647,35 @@ async function run(useGemini) {
   } finally { clearInterval(ticker); btns.forEach(b => b.disabled = false); }
 }
 let ticker = null;
-$("btnConvert").onclick = () => run(true);
+/* Self-update: "Prepare" first checks whether a newer copy of this page is online. If so it
+   reloads the latest version (bypassing the 10-minute cache) and continues automatically.
+   The pasted text and settings are already saved in this browser, so nothing is lost. */
+async function latestVersion() {
+  try {
+    if (!/^https?:$/.test(location.protocol)) return null;          // opened from disk: nothing to update
+    const res = await fetch(location.pathname + "?check=" + Date.now(), { cache: "no-store" });
+    if (!res.ok) return null;
+    return ((await res.text()).match(/const APP_VERSION = "([^"]+)"/) || [])[1] || null;
+  } catch { return null; }
+}
+$("btnConvert").onclick = async () => {
+  let justUpdated = false;
+  try { justUpdated = sessionStorage.getItem("br-vs:updated") === APP_VERSION; } catch {}
+  if (!justUpdated) {
+    $("btnConvert").disabled = true;
+    status("convStatus", "info", "بررسی نسخه جدید برنامه ...");
+    const v = await latestVersion();
+    $("btnConvert").disabled = false;
+    if (v && v > APP_VERSION) {
+      store.set("src", $("src").value); store.set("episode", $("episode").value);
+      try { sessionStorage.setItem("br-vs:autorun", "1"); sessionStorage.setItem("br-vs:updated", v); } catch {}
+      status("convStatus", "info", `نسخه جدید (${v}) پیدا شد. برنامه به روز می شود و خودش ادامه می دهد ...`);
+      location.replace(location.pathname + "?v=" + encodeURIComponent(v));
+      return;
+    }
+  }
+  run(true);
+};
 $("btnOffline").onclick = () => run(false);
 $("btnCheck").onclick = () => renderChecks(check(lastSkeleton && $("out").value.includes("===") ? lastSkeleton : "", $("out").value));
 $("btnCopy").onclick = async () => { try { await navigator.clipboard.writeText($("out").value); status("convStatus", "ok", "کپی شد."); } catch { $("out").select(); status("convStatus", "info", "متن انتخاب شد؛ Ctrl+C بزنید."); } };
@@ -764,6 +793,14 @@ function safeName() { return ($("episode").value || "").trim().replace(/[^\w.-]+
 if (!window.showDirectoryPicker) { $("btnFolder").hidden = true; $("folderName").textContent = "روی این دستگاه هر فایل با دکمه Save دانلود می شود."; }
 if ($("out").value.trim()) { renderChecks(check(lastSkeleton, $("out").value)); renderPartRows(check("", $("out").value).parts); }
 else $("btnAudio").disabled = true;
+$("appVersion").textContent = "v" + APP_VERSION;
+// After a self-update reload, continue the "Prepare" the user had pressed.
+try {
+  if (sessionStorage.getItem("br-vs:autorun") === "1") {
+    sessionStorage.removeItem("br-vs:autorun");
+    if ($("src").value.trim()) { status("convStatus", "ok", `برنامه به نسخه ${APP_VERSION} به روز شد. آماده کردن ادامه پیدا می کند ...`); setTimeout(() => run(true), 600); }
+  }
+} catch {}
 </script>
 </body>
 </html>
