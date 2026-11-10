@@ -258,8 +258,52 @@ function convertOld(text) {
   return { lines: out, removed };
 }
 
+/* Scripts already in TTS format ("=== 1" parts, "# style:" blocks): keep the part names and the
+   wording, use each old style only as a hint, and rebuild the blocks with the fixed palette. */
+function isTtsFormat(text) { return /^\s*#\s*style\s*:/im.test(text) || /^\s*===\s*\S/m.test(text); }
+function convertTts(text) {
+  const parts = []; let cur = null, hint = "";
+  const removed = [];
+  for (const raw of text.replace(/\r\n?/g, "\n").split("\n")) {
+    const l = raw.trim();
+    if (!l) continue;
+    if (l.startsWith("//")) { removed.push(l); continue; }
+    if (l.startsWith("===")) { cur = { name: l.slice(3).trim() || String(parts.length + 1), paras: [] }; parts.push(cur); hint = ""; continue; }
+    if (/^#\s*style\s*:/i.test(l)) { hint = l.split(":").slice(1).join(":").trim(); if (cur) cur.paras.push([]); continue; }
+    if (!cur) { cur = { name: "", paras: [[]] }; parts.push(cur); }
+    if (!cur.paras.length) cur.paras.push([]);
+    let s = cleanLine(l)
+      .replace(/\[\s*short pause\s*\]|<\s*short pause\s*>/gi, " ")
+      .replace(/\[\s*long pause\s*\]/gi, " <long pause> ")
+      .replace(/\[\s*(breath|sigh|exhales)\s*\]/gi, " <$1> ")
+      .replace(/\[[^\]]+\]/g, " ").replace(/\s{2,}/g, " ").trim();
+    if (!s) continue;
+    const para = cur.paras[cur.paras.length - 1];
+    para.push(para.length === 0 && hint ? `[${hint}] ${s}` : s);
+  }
+  for (const p of parts) p.paras = p.paras.filter(x => x.length);
+  return { parts: parts.filter(p => p.paras.length), removed };
+}
+
 function structure(text) {
   let removed = [], kind;
+  if (isTtsFormat(text) && !detectShorts(text)) {
+    const conv = convertTts(text); removed = conv.removed;
+    const words = wordsIn(conv.parts.flatMap(p => p.paras.flat()).join(" ").replace(/\[[^\]]*\]/g, " "));
+    let parts = conv.parts;
+    if (parts.length === 1 && !parts[0].name) {
+      kind = $("kind").value === "auto" ? (words <= 170 ? "shorts" : "long") : $("kind").value;
+      if (kind === "shorts") parts[0].name = "short1";
+      else parts = parseLong(parts[0].paras.map(p => p.join("\n")).join("\n\n"));
+    } else {
+      kind = parts.every(p => /^short/i.test(p.name)) ? "shorts" : "long";
+    }
+    if ($("fullStory").checked) for (const p of parts) {
+      if (/^short/i.test(p.name) && !p.paras.flat().join(" ").toLowerCase().includes(FULL_STORY.toLowerCase().slice(0, -1))) p.paras.push([FULL_STORY]);
+    }
+    const skeleton = parts.map(p => `=== ${p.name}\n` + p.paras.map(ls => ls.join("\n")).join("\n\n")).join("\n\n");
+    return { kind, parts, skeleton, removed, oldStyle: true };
+  }
   if (isOldStyle(text) && !detectShorts(text)) {
     const conv = convertOld(text); removed = conv.removed;
     const words = wordsIn(conv.lines.join(" ").replace(/\[[^\]]*\]/g, " "));
@@ -513,7 +557,7 @@ async function run(useGemini) {
     const header = `// ${($("episode").value || "episode").trim()} · voice: ${VOICE} · ${s.parts.length} parts\n\n`;
     $("out").value = header + out + "\n"; store.set("out", $("out").value);
     const r = check(s.skeleton, $("out").value); renderChecks(r);
-    const oldNote = s.oldStyle ? `\nاسکریپت قدیمی تشخیص داده شد: ${s.removed.length} خط دستورالعمل گوینده حذف شد (گفته نمی شود) و تگ های براکتی به styleهای ثابت تبدیل شدند.` : "";
+    const oldNote = s.oldStyle ? `\nاسکریپت دارای تگ یا style تشخیص داده شد: ${s.removed.length} خط دستورالعمل یا توضیح حذف شد (گفته نمی شود)، styleها به فهرست ثابت تبدیل شدند و براکت های مربعی پاک شدند.` : "";
     status("convStatus", r.errors.length ? "warn" : "ok", (r.errors.length ? "آماده شد ولی چند مورد باید درست شود (بخش ۲)." : `آماده شد: ${s.parts.length} بخش (${useGemini ? "Gemini" : "بدون اینترنت"}).`) + oldNote);
     resetParts();
   } catch (e) {
