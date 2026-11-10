@@ -399,7 +399,9 @@ async function gemini(model, body) {
   const key = $("key").value.trim();
   if (!key) throw new UserError("برای این کار کلید Google AI Studio لازم است. کلید را در بخش ۰ (بالای صفحه) وارد کنید، یا «بدون اینترنت آماده کن» را بزنید.");
   let last = "";
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  const waits = [10, 20, 40, 60];            // seconds between attempts; 5 attempts in total
+  const tries = waits.length + 1;
+  for (let attempt = 1; attempt <= tries; attempt++) {
     let res;
     try {
       res = await fetch(API + encodeURIComponent(model) + ":generateContent", {
@@ -420,12 +422,29 @@ async function gemini(model, body) {
       404: "مدل پیدا نشد (404). نام مدل احتمالا عوض شده؛ نام درست را از Google AI Studio بردارید و در «تنظیمات مدل» بگذارید.",
     };
     if (hints[res.status]) throw new UserError(hints[res.status] + "\nپاسخ سرور: " + detail.replace(key, "***").slice(0, 200));
-    last = res.status === 429 ? "سقف استفاده پر شد (429)." : `خطای سرور (${res.status}).`;
-    if (attempt < 3) { await note(`${last} تلاش دوباره تا ۱۰ ثانیه دیگر (${attempt}/3) ...`); await sleep(10000); }
+    last = res.status === 429 ? "سقف استفاده پر شد (429)." : res.status === 503 ? "سرورهای Gemini الان شلوغ اند (503)." : `خطای سرور (${res.status}).`;
+    if (attempt < tries) { const w = waits[attempt - 1]; await note(`${last} تلاش دوباره تا ${w} ثانیه دیگر (${attempt}/${tries}) ...`); await sleep(w * 1000); }
   }
-  throw new UserError(last + " بعدا دوباره امتحان کنید.");
+  const err = new UserError(last + " بعدا دوباره امتحان کنید.");
+  err.busy = true;                         // Google-side overload: worth trying another model
+  throw err;
 }
 class UserError extends Error {}
+
+// When the chosen text model stays busy, look for another text model this key can use.
+async function backupTextModel(current) {
+  try {
+    const res = await fetch(API.replace(/\/models\/$/, "/models?pageSize=200"), { headers: { "x-goog-api-key": $("key").value.trim() } });
+    if (!res.ok) return null;
+    const names = ((await res.json()).models || [])
+      .filter(m => (m.supportedGenerationMethods || []).includes("generateContent"))
+      .map(m => (m.name || "").replace(/^models\//, ""))
+      .filter(n => /^gemini-/.test(n) && n !== current && !/tts|image|embed|audio|live|robot|preview-\d|exp/.test(n));
+    const ver = (n) => parseFloat((n.match(/gemini-(\d+(?:\.\d+)?)/) || [])[1] || 0);
+    const rank = (n) => (/-flash$/.test(n) ? 3 : /-pro$/.test(n) ? 2 : /flash/.test(n) ? 1 : 0) * 100 + ver(n);
+    return names.sort((a, b) => rank(b) - rank(a))[0] || null;
+  } catch { return null; }
+}
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 let noteTarget = "convStatus";
 async function note(msg) { status(noteTarget, "info", msg); }
@@ -573,6 +592,7 @@ async function run(useGemini) {
   lastSkeleton = s.skeleton; store.set("skeleton", lastSkeleton);
   noteTarget = "convStatus";
   const btns = [$("btnConvert"), $("btnOffline")]; btns.forEach(b => b.disabled = true);
+  let usedNote = "";
   try {
     let out;
     if (useGemini) {
@@ -582,16 +602,34 @@ async function run(useGemini) {
       ticker = setInterval(() => {
         if ($("convStatus").textContent.startsWith(label)) status("convStatus", "info", `${label} ... ${fmt((Date.now() - t0) / 1000)} (معمولا چند دقیقه طول می کشد؛ صفحه را نبندید)`);
       }, 1000);
+      let model = $("textModel").value.trim();
       const ask = async () => {
-        const r = await gemini($("textModel").value.trim(), { contents: [{ role: "user", parts: [{ text: PROMPT.replace("{script}", s.skeleton) }] }], generationConfig: { temperature: 0.2 } });
+        const r = await gemini(model, { contents: [{ role: "user", parts: [{ text: PROMPT.replace("{script}", s.skeleton) }] }], generationConfig: { temperature: 0.2 } });
         const txt = (r.candidates || []).flatMap(c => (c.content?.parts || []).map(p => p.text || "")).join("");
         return txt.trim().replace(/^```[a-z]*\s*\n/i, "").replace(/\n```\s*$/, "").trim();
       };
-      out = await ask();
-      if (check(s.skeleton, out).errors.length) {
+      try {
+        out = await ask();
+      } catch (e) {
+        if (!e.busy) throw e;
+        // 1) another text model, 2) the offline version, so the user never ends up with nothing
+        const backup = await backupTextModel(model);
+        if (backup) {
+          status("convStatus", "info", `مدل ${model} شلوغ است؛ با مدل پشتیبان ${backup} امتحان می شود ...`);
+          model = backup;
+          try { out = await ask(); usedNote = `\n(مدل اصلی شلوغ بود؛ با مدل پشتیبان ${backup} آماده شد.)`; } catch (e2) { if (!e2.busy) throw e2; }
+        }
+        if (!out) {
+          out = offlineStyles(s.skeleton);
+          usedNote = "\nسرورهای Gemini شلوغ بودند، برای همین نسخه بدون اینترنت آماده شد. این نسخه قابل استفاده است؛ اگر نسخه Gemini را می خواهید، چند دقیقه بعد دوباره «آماده کن» را بزنید.";
+        }
+      }
+      if (check(s.skeleton, out).errors.length && !usedNote.includes("بدون اینترنت")) {
         status("convStatus", "info", "نتیجه اول قوانین را کامل رعایت نکرد؛ یک بار دیگر ...");
-        const again = await ask();
-        if (check(s.skeleton, again).errors.length < check(s.skeleton, out).errors.length) out = again;
+        try {
+          const again = await ask();
+          if (check(s.skeleton, again).errors.length < check(s.skeleton, out).errors.length) out = again;
+        } catch (e3) { if (!e3.busy) throw e3; }
       }
     } else {
       out = offlineStyles(s.skeleton);
@@ -600,7 +638,8 @@ async function run(useGemini) {
     $("out").value = header + out + "\n"; store.set("out", $("out").value);
     const r = check(s.skeleton, $("out").value); renderChecks(r);
     const oldNote = s.oldStyle ? `\nاسکریپت دارای تگ یا style تشخیص داده شد: ${s.removed.length} خط دستورالعمل یا توضیح حذف شد (گفته نمی شود)، styleها به فهرست ثابت تبدیل شدند و براکت های مربعی پاک شدند.` : "";
-    status("convStatus", r.errors.length ? "warn" : "ok", (r.errors.length ? "آماده شد ولی چند مورد باید درست شود (بخش ۲)." : `آماده شد: ${s.parts.length} بخش (${useGemini ? "Gemini" : "بدون اینترنت"}).`) + oldNote);
+    const offlineFallback = usedNote.includes("بدون اینترنت");
+    status("convStatus", r.errors.length || offlineFallback ? "warn" : "ok", (r.errors.length ? "آماده شد ولی چند مورد باید درست شود (بخش ۲)." : `آماده شد: ${s.parts.length} بخش (${useGemini && !offlineFallback ? "Gemini" : "بدون اینترنت"}).`) + usedNote + oldNote);
     resetParts();
   } catch (e) {
     status("convStatus", "err", e instanceof UserError ? e.message : "خطا: " + (e.message || e));
