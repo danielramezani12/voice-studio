@@ -88,6 +88,19 @@ details summary { cursor: pointer; color: var(--dim); font-size: .85rem; }
   </header>
 
   <section>
+    <h2><span class="n">0</span>کلید Google AI Studio</h2>
+    <div class="row">
+      <label for="key">کلید API (فقط در همین مرورگر ذخیره می شود، هیچ جا فرستاده نمی شود جز گوگل)
+        <input type="password" id="key" autocomplete="off" placeholder="paste your Google AI Studio API key">
+      </label>
+      <button id="btnKeyTest">تست کلید</button>
+      <button id="btnKeyClear">پاک کردن کلید</button>
+    </div>
+    <p class="hint">کلید را در <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener" style="color:var(--cyan)">aistudio.google.com ← Get API key</a> بسازید. همین یک کلید هم برای آماده کردن اسکریپت و هم برای ساخت صدا استفاده می شود. روی هر دستگاه یک بار وارد کنید. VPN باید روشن باشد.</p>
+    <p class="status" id="keyStatus" hidden></p>
+  </section>
+
+  <section>
     <h2><span class="n">1</span>متن یا سناریو را بچسبانید</h2>
     <textarea id="src" spellcheck="false" aria-label="Script from Claude" placeholder="Paste the script.md / shorts.md text you got from Claude here."></textarea>
     <div class="row">
@@ -127,11 +140,7 @@ details summary { cursor: pointer; color: var(--dim); font-size: .85rem; }
 
   <section>
     <h2><span class="n">3</span>ساخت صدا (اختیاری)</h2>
-    <div class="row">
-      <label for="key">کلید API گوگل (فقط در همین مرورگر ذخیره می شود)
-        <input type="password" id="key" autocomplete="off" placeholder="paste key">
-      </label>
-    </div>
+    <p class="hint">از همان کلید بخش ۰ استفاده می شود.</p>
     <div class="row">
       <button class="primary" id="btnAudio">ساخت صدای همه بخش ها</button>
       <button id="btnFolder">انتخاب پوشه برای ذخیره مستقیم</button>
@@ -168,7 +177,40 @@ const store = {
 };
 for (const id of ["ttsModel", "textModel"]) { $(id).value = store.get(id, DEFAULTS[id]); $(id).onchange = () => { store.set(id, $(id).value.trim() || DEFAULTS[id]); showModels(); }; }
 $("key").value = store.get("key", "");
-$("key").onchange = () => store.set("key", $("key").value.trim());
+function saveKey() {
+  const k = $("key").value.trim();
+  store.set("key", k);
+  const saved = store.get("key", "") === k;
+  if (!k) status("keyStatus", "info", "کلیدی ذخیره نشده است.");
+  else status("keyStatus", saved ? "ok" : "warn", saved ? `کلید ذخیره شد (…${k.slice(-4)}). دفعه بعد که برنامه را در همین مرورگر باز کنید، سر جایش است.` : "کلید وارد شد ولی این مرورگر اجازه ذخیره نداد (مثلا پنجره ناشناس). بعد از بستن صفحه باید دوباره واردش کنید.");
+}
+$("key").addEventListener("input", saveKey);
+$("key").addEventListener("change", saveKey);
+$("btnKeyClear").onclick = () => { $("key").value = ""; store.set("key", ""); status("keyStatus", "info", "کلید از این مرورگر پاک شد."); };
+$("btnKeyTest").onclick = async () => {
+  const k = $("key").value.trim();
+  if (!k) return status("keyStatus", "err", "اول کلید را وارد کنید.");
+  status("keyStatus", "info", "در حال تست کلید ...");
+  try {
+    const res = await fetch(API.replace(/\/models\/$/, "/models?pageSize=200"), { headers: { "x-goog-api-key": k } });
+    const body = await res.text();
+    if (res.ok) {
+      const names = (JSON.parse(body).models || []).map(m => (m.name || "").replace(/^models\//, ""));
+      const tts = $("ttsModel").value.trim(), txt = $("textModel").value.trim();
+      const miss = [tts, txt].filter(m => names.length && !names.includes(m));
+      status("keyStatus", miss.length ? "warn" : "ok", "کلید درست است و اتصال به گوگل برقرار است." + (miss.length ? `\nولی این مدل ها در فهرست این کلید پیدا نشدند: ${miss.join("، ")}. اگر هنگام کار خطای 404 آمد، نام مدل را در «تنظیمات مدل» عوض کنید.` : ""));
+    } else if (/location is not supported/i.test(body)) {
+      status("keyStatus", "err", "گوگل درخواست را به خاطر موقعیت مکانی رد کرد. VPN را روشن کنید و دوباره تست کنید.");
+    } else if (res.status === 400 || res.status === 401 || res.status === 403) {
+      status("keyStatus", "err", `کلید پذیرفته نشد (${res.status}). کلید را دوباره از Google AI Studio کپی کنید.`);
+    } else {
+      status("keyStatus", "err", `پاسخ غیرمنتظره از گوگل (${res.status}). کمی بعد دوباره تست کنید.`);
+    }
+  } catch (e) {
+    status("keyStatus", "err", "اتصال به گوگل برقرار نشد. VPN روشن است؟ از ایران درخواست های Google API فقط با VPN کار می کنند.");
+  }
+};
+if (store.get("key", "")) status("keyStatus", "ok", `کلید ذخیره شده در این مرورگر آماده است (…${store.get("key", "").slice(-4)}).`);
 $("src").value = store.get("src", "");
 $("src").oninput = () => store.set("src", $("src").value);
 $("out").value = store.get("out", "");
@@ -355,7 +397,7 @@ SCRIPT
 
 async function gemini(model, body) {
   const key = $("key").value.trim();
-  if (!key) throw new UserError("برای این کار کلید API لازم است. کلید را در بخش ۳ وارد کنید، یا «بدون اینترنت آماده کن» را بزنید.");
+  if (!key) throw new UserError("برای این کار کلید Google AI Studio لازم است. کلید را در بخش ۰ (بالای صفحه) وارد کنید، یا «بدون اینترنت آماده کن» را بزنید.");
   let last = "";
   for (let attempt = 1; attempt <= 3; attempt++) {
     let res;
